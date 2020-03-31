@@ -5,6 +5,7 @@ This repository contains a tutorial of Tensorflow Object Detection using custom 
 # Prepare data
 
 
+- - -
 
 
 
@@ -112,6 +113,19 @@ eval_input_reader: {
 which are towards the end of the file.
 
 **Note** : The paths should be **absolute**!
+
+
+## 4. Download Pretrained MODEL
+
+Goto detection & run commands
+
+```
+!wget http://download.tensorflow.org/models/object_detection/faster_rcnn_inception_v2_coco_2018_01_28.tar.gz
+```
+
+```
+!tar -xf faster_rcnn_inception_v2_coco_2018_01_28.tar.gz
+``
 
 
 
