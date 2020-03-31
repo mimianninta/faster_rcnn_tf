@@ -2,10 +2,15 @@
 
 This repository contains a tutorial of Tensorflow Object Detection using custom dataset.
 
+
+
 # Prepare data
 
 
 - - -
+
+
+
 
 
 
@@ -42,6 +47,9 @@ This repository contains a tutorial of Tensorflow Object Detection using custom 
 !protoc object_detection/protos/*.proto --python_out=. # protoc needs to be version 3
 !export PYTHONPATH=$PYTHONPATH:`pwd`:`pwd`/slim # needs to be executed each time in a new shell
 ```
+
+
+
 
 # Data Preparation
 
@@ -125,7 +133,8 @@ Goto detection & run commands
 
 ```
 !tar -xf faster_rcnn_inception_v2_coco_2018_01_28.tar.gz
-``
+```
+
 
 
 
@@ -149,6 +158,7 @@ You can run `tensorboard --logdir=${YOUR MODEL'S OUTPUT DIR}` to check if the lo
 
 
 
+
 # Evaluation
 
 From `detection/models/research/`, run
@@ -157,6 +167,7 @@ From `detection/models/research/`, run
 ```
 
 Then, run `tensorboard --logdir=${YOUR EVAL'S OUTUPT DIR}`. 
+
 
 
 
@@ -169,6 +180,8 @@ From `detection/models/research/`, run
 !python object_detection/export_inference_graph.py --input_type image_tensor --pipeline_config_path ${YOUR CONFIG's PATH} --trained_checkpoint_prefix ${YOUR MODEL'S OUTPUT DIR}/model.ckpt-XXXX --output_directory ${YOUR GRAPH's PATH}
 ```
 where `XXXX` is the last checkpoint step (the largest number in that folder).
+
+
 
 
 # Run inference
@@ -188,6 +201,7 @@ where `XXXX` is the last checkpoint step (the largest number in that folder).
 ```
 
 The output images will be saved in `/detection/models/research/output/` folder.
+
 
 
 
