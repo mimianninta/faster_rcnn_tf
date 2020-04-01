@@ -188,7 +188,7 @@ where `XXXX` is the last checkpoint step (the largest number in that folder).
 
 1. First, find some images with objects you want to detect inside. Download or keep them to `detection/models/research/object_detection/` with format `.jpg`.
 
-2. Move the folder containing the `.pb` graph to `/detection/models/research/` and rename the folder as `inference_graph`.
+2. Move the folder containing the `.pb` graph (from previous step output directory) to `/detection/models/research/` and rename the folder as `inference_graph`.
 
 3. Then copy the label map to `/detection/models/research/training/` and rename the file as `labelmap.pbtxt`
 

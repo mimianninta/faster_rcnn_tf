@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,144 +12,150 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-r"""Saves out a GraphDef containing the architecture of the model.
 
-To use it, run something like this, with a model name defined by slim:
+r"""Tool to export an object detection model for inference.
 
-bazel build tensorflow_models/research/slim:export_inference_graph
-bazel-bin/tensorflow_models/research/slim/export_inference_graph \
---model_name=inception_v3 --output_file=/tmp/inception_v3_inf_graph.pb
+Prepares an object detection tensorflow graph for inference using model
+configuration and a trained checkpoint. Outputs inference
+graph, associated checkpoint files, a frozen inference graph and a
+SavedModel (https://tensorflow.github.io/serving/serving_basic.html).
 
-If you then want to use the resulting model with your own or pretrained
-checkpoints as part of a mobile model, you can run freeze_graph to get a graph
-def with the variables inlined as constants using:
+The inference graph contains one of three input nodes depending on the user
+specified option.
+  * `image_tensor`: Accepts a uint8 4-D tensor of shape [None, None, None, 3]
+  * `encoded_image_string_tensor`: Accepts a 1-D string tensor of shape [None]
+    containing encoded PNG or JPEG images. Image resolutions are expected to be
+    the same if more than 1 image is provided.
+  * `tf_example`: Accepts a 1-D string tensor of shape [None] containing
+    serialized TFExample protos. Image resolutions are expected to be the same
+    if more than 1 image is provided.
 
-bazel build tensorflow/python/tools:freeze_graph
-bazel-bin/tensorflow/python/tools/freeze_graph \
---input_graph=/tmp/inception_v3_inf_graph.pb \
---input_checkpoint=/tmp/checkpoints/inception_v3.ckpt \
---input_binary=true --output_graph=/tmp/frozen_inception_v3.pb \
---output_node_names=InceptionV3/Predictions/Reshape_1
+and the following output nodes returned by the model.postprocess(..):
+  * `num_detections`: Outputs float32 tensors of the form [batch]
+      that specifies the number of valid boxes per image in the batch.
+  * `detection_boxes`: Outputs float32 tensors of the form
+      [batch, num_boxes, 4] containing detected boxes.
+  * `detection_scores`: Outputs float32 tensors of the form
+      [batch, num_boxes] containing class scores for the detections.
+  * `detection_classes`: Outputs float32 tensors of the form
+      [batch, num_boxes] containing classes for the detections.
+  * `raw_detection_boxes`: Outputs float32 tensors of the form
+      [batch, raw_num_boxes, 4] containing detection boxes without
+      post-processing.
+  * `raw_detection_scores`: Outputs float32 tensors of the form
+      [batch, raw_num_boxes, num_classes_with_background] containing class score
+      logits for raw detection boxes.
+  * `detection_masks`: (Optional) Outputs float32 tensors of the form
+      [batch, num_boxes, mask_height, mask_width] containing predicted instance
+      masks for each box if its present in the dictionary of postprocessed
+      tensors returned by the model.
+  * detection_multiclass_scores: (Optional) Outputs float32 tensor of shape
+      [batch, num_boxes, num_classes_with_background] for containing class
+      score distribution for detected boxes including background if any.
+  * detection_features: (Optional) float32 tensor of shape
+      [batch, num_boxes, roi_height, roi_width, depth]
+  containing classifier features
 
-The output node names will vary depending on the model, but you can inspect and
-estimate them using the summarize_graph tool:
+Notes:
+ * This tool uses `use_moving_averages` from eval_config to decide which
+   weights to freeze.
 
-bazel build tensorflow/tools/graph_transforms:summarize_graph
-bazel-bin/tensorflow/tools/graph_transforms/summarize_graph \
---in_graph=/tmp/inception_v3_inf_graph.pb
+Example Usage:
+--------------
+python export_inference_graph \
+    --input_type image_tensor \
+    --pipeline_config_path path/to/ssd_inception_v2.config \
+    --trained_checkpoint_prefix path/to/model.ckpt \
+    --output_directory path/to/exported_model_directory
 
-To run the resulting graph in C++, you can look at the label_image sample code:
+The expected output would be in the directory
+path/to/exported_model_directory (which is created if it does not exist)
+with contents:
+ - inference_graph.pbtxt
+ - model.ckpt.data-00000-of-00001
+ - model.ckpt.info
+ - model.ckpt.meta
+ - frozen_inference_graph.pb
+ + saved_model (a directory)
 
-bazel build tensorflow/examples/label_image:label_image
-bazel-bin/tensorflow/examples/label_image/label_image \
---image=${HOME}/Pictures/flowers.jpg \
---input_layer=input \
---output_layer=InceptionV3/Predictions/Reshape_1 \
---graph=/tmp/frozen_inception_v3.pb \
---labels=/tmp/imagenet_slim_labels.txt \
---input_mean=0 \
---input_std=255
+Config overrides (see the `config_override` flag) are text protobufs
+(also of type pipeline_pb2.TrainEvalPipelineConfig) which are used to override
+certain fields in the provided pipeline_config_path.  These are useful for
+making small changes to the inference graph that differ from the training or
+eval config.
 
+Example Usage (in which we change the second stage post-processing score
+threshold to be 0.5):
+
+python export_inference_graph \
+    --input_type image_tensor \
+    --pipeline_config_path path/to/ssd_inception_v2.config \
+    --trained_checkpoint_prefix path/to/model.ckpt \
+    --output_directory path/to/exported_model_directory \
+    --config_override " \
+            model{ \
+              faster_rcnn { \
+                second_stage_post_processing { \
+                  batch_non_max_suppression { \
+                    score_threshold: 0.5 \
+                  } \
+                } \
+              } \
+            }"
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-import os
-
 import tensorflow as tf
-
-from tensorflow.python.platform import gfile
-from datasets import dataset_factory
-from nets import nets_factory
-
+from google.protobuf import text_format
+from object_detection import exporter
+from object_detection.protos import pipeline_pb2
 
 slim = tf.contrib.slim
+flags = tf.app.flags
 
-tf.app.flags.DEFINE_string(
-    'model_name', 'inception_v3', 'The name of the architecture to save.')
-
-tf.app.flags.DEFINE_boolean(
-    'is_training', False,
-    'Whether to save out a training-focused version of the model.')
-
-tf.app.flags.DEFINE_integer(
-    'image_size', None,
-    'The image size to use, otherwise use the model default_image_size.')
-
-tf.app.flags.DEFINE_integer(
-    'batch_size', None,
-    'Batch size for the exported model. Defaulted to "None" so batch size can '
-    'be specified at model runtime.')
-
-tf.app.flags.DEFINE_string('dataset_name', 'imagenet',
-                           'The name of the dataset to use with the model.')
-
-tf.app.flags.DEFINE_integer(
-    'labels_offset', 0,
-    'An offset for the labels in the dataset. This flag is primarily used to '
-    'evaluate the VGG and ResNet architectures which do not use a background '
-    'class for the ImageNet dataset.')
-
-tf.app.flags.DEFINE_string(
-    'output_file', '', 'Where to save the resulting file to.')
-
-tf.app.flags.DEFINE_string(
-    'dataset_dir', '', 'Directory to save intermediate dataset files to')
-
-tf.app.flags.DEFINE_bool(
-    'quantize', False, 'whether to use quantized graph or not.')
-
-tf.app.flags.DEFINE_bool(
-    'is_video_model', False, 'whether to use 5-D inputs for video model.')
-
-tf.app.flags.DEFINE_integer(
-    'num_frames', None,
-    'The number of frames to use. Only used if is_video_model is True.')
-
-tf.app.flags.DEFINE_bool('write_text_graphdef', False,
-                         'Whether to write a text version of graphdef.')
-
-FLAGS = tf.app.flags.FLAGS
+flags.DEFINE_string('input_type', 'image_tensor', 'Type of input node. Can be '
+                    'one of [`image_tensor`, `encoded_image_string_tensor`, '
+                    '`tf_example`]')
+flags.DEFINE_string('input_shape', None,
+                    'If input_type is `image_tensor`, this can explicitly set '
+                    'the shape of this input tensor to a fixed size. The '
+                    'dimensions are to be provided as a comma-separated list '
+                    'of integers. A value of -1 can be used for unknown '
+                    'dimensions. If not specified, for an `image_tensor, the '
+                    'default shape will be partially specified as '
+                    '`[None, None, None, 3]`.')
+flags.DEFINE_string('pipeline_config_path', None,
+                    'Path to a pipeline_pb2.TrainEvalPipelineConfig config '
+                    'file.')
+flags.DEFINE_string('trained_checkpoint_prefix', None,
+                    'Path to trained checkpoint, typically of the form '
+                    'path/to/model.ckpt')
+flags.DEFINE_string('output_directory', None, 'Path to write outputs.')
+flags.DEFINE_string('config_override', '',
+                    'pipeline_pb2.TrainEvalPipelineConfig '
+                    'text proto to override pipeline_config_path.')
+flags.DEFINE_boolean('write_inference_graph', False,
+                     'If true, writes inference graph to disk.')
+tf.app.flags.mark_flag_as_required('pipeline_config_path')
+tf.app.flags.mark_flag_as_required('trained_checkpoint_prefix')
+tf.app.flags.mark_flag_as_required('output_directory')
+FLAGS = flags.FLAGS
 
 
 def main(_):
-  if not FLAGS.output_file:
-    raise ValueError('You must supply the path to save to with --output_file')
-  if FLAGS.is_video_model and not FLAGS.num_frames:
-    raise ValueError(
-        'Number of frames must be specified for video models with --num_frames')
-  tf.logging.set_verbosity(tf.logging.INFO)
-  with tf.Graph().as_default() as graph:
-    dataset = dataset_factory.get_dataset(FLAGS.dataset_name, 'train',
-                                          FLAGS.dataset_dir)
-    network_fn = nets_factory.get_network_fn(
-        FLAGS.model_name,
-        num_classes=(dataset.num_classes - FLAGS.labels_offset),
-        is_training=FLAGS.is_training)
-    image_size = FLAGS.image_size or network_fn.default_image_size
-    if FLAGS.is_video_model:
-      input_shape = [FLAGS.batch_size, FLAGS.num_frames,
-                     image_size, image_size, 3]
-    else:
-      input_shape = [FLAGS.batch_size, image_size, image_size, 3]
-    placeholder = tf.placeholder(name='input', dtype=tf.float32,
-                                 shape=input_shape)
-    network_fn(placeholder)
-
-    if FLAGS.quantize:
-      tf.contrib.quantize.create_eval_graph()
-
-    graph_def = graph.as_graph_def()
-    if FLAGS.write_text_graphdef:
-      tf.io.write_graph(
-          graph_def,
-          os.path.dirname(FLAGS.output_file),
-          os.path.basename(FLAGS.output_file),
-          as_text=True)
-    else:
-      with gfile.GFile(FLAGS.output_file, 'wb') as f:
-        f.write(graph_def.SerializeToString())
+  pipeline_config = pipeline_pb2.TrainEvalPipelineConfig()
+  with tf.gfile.GFile(FLAGS.pipeline_config_path, 'r') as f:
+    text_format.Merge(f.read(), pipeline_config)
+  text_format.Merge(FLAGS.config_override, pipeline_config)
+  if FLAGS.input_shape:
+    input_shape = [
+        int(dim) if dim != '-1' else None
+        for dim in FLAGS.input_shape.split(',')
+    ]
+  else:
+    input_shape = None
+  exporter.export_inference_graph(
+      FLAGS.input_type, pipeline_config, FLAGS.trained_checkpoint_prefix,
+      FLAGS.output_directory, input_shape=input_shape,
+      write_inference_graph=FLAGS.write_inference_graph)
 
 
 if __name__ == '__main__':
